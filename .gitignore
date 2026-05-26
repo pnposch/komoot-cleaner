@@ -1,0 +1,10 @@
+# credentials
+.env
+
+# html snapshots
+*.html
+*_files/
+
+# python
+__pycache__/
+*.pyc

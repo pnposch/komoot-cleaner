@@ -3,12 +3,16 @@
 komoot-cleaner: delete all recorded tours from a Komoot account.
 
 Authentication uses Komoot's undocumented Basic-Auth endpoint:
-  GET https://api.komoot.de/v006/account/email/{email}
+  GET https://api.komoot.de/v006/account/email/{email}/
   Authorization: Basic base64(email:password)
   → returns { username, password }  (numeric user-id and API token)
 
 Subsequent calls use:
   Authorization: Basic base64(userId:token)
+
+Tour type values returned by the API:
+  "tour_recorded" — completed/recorded rides  (the only ones we delete)
+  "tour_planned"  — planned routes            (must never be deleted)
 """
 
 import os
@@ -42,10 +46,18 @@ def _basic(user: str, password: str) -> str:
 
 def login(email: str, password: str) -> tuple[str, str]:
     """Return (user_id, api_token) for the given credentials."""
-    url = f"{API_V006}/account/email/{requests.utils.quote(email, safe='')}"
+    # Use raw email with trailing slash — matches Komoot's expected URL format.
+    url = f"{API_V006}/account/email/{email}/"
     resp = requests.get(url, headers={"Authorization": _basic(email, password)})
     if resp.status_code in (401, 403):
         log.error("Login failed (HTTP %s): wrong email or password.", resp.status_code)
+        sys.exit(1)
+    if resp.status_code == 404:
+        log.error(
+            "Login failed (HTTP 404): Komoot account not found for '%s'. "
+            "Check that KOMOOT_EMAIL matches your Komoot account exactly.",
+            email,
+        )
         sys.exit(1)
     resp.raise_for_status()
     data = resp.json()
@@ -60,9 +72,14 @@ def login(email: str, password: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 def list_recorded_tours(user_id: str, auth_header: str) -> list[dict]:
-    """Return all recorded tours as a list of dicts with at least {id, name}."""
+    """Return all recorded tours as a list of dicts with at least {id, name}.
+
+    Fetches all tours (planned + recorded) and filters client-side to
+    'tour_recorded' only — the safest approach given Komoot's API does not
+    reliably accept server-side type filters.
+    """
     tours: list[dict] = []
-    url = f"{API_V007}/users/{user_id}/tours/?type=recorded&page=0&limit=50"
+    url = f"{API_V007}/users/{user_id}/tours/"
 
     while url:
         resp = requests.get(url, headers={"Authorization": auth_header})
@@ -73,9 +90,9 @@ def list_recorded_tours(user_id: str, auth_header: str) -> list[dict]:
         page_tours = embedded.get("tours", [])
         for t in page_tours:
             tour_type = t.get("type", "")
-            if tour_type != "recorded_route":
-                log.warning(
-                    "Skipping tour %s (%r) — type=%r is not 'recorded_route'",
+            if tour_type != "tour_recorded":
+                log.debug(
+                    "Skipping tour %s (%r) — type=%r is not 'tour_recorded'",
                     t["id"], t.get("name", ""), tour_type,
                 )
                 continue
